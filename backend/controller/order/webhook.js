@@ -1,6 +1,6 @@
-const stripe = require('../../config/stripe');
-const orderModel = require('../../models/OrderProductModel');
-const addToCartModel = require('../../models/cartProduct');
+const stripe = require("../../config/stripe");
+const orderModel = require("../../models/OrderProductModel");
+const addToCartModel = require("../../models/cartProduct");
 
 const endpointSecret = process.env.STRIPE_ENDPOINT_WEBHOOK_SECRET_KEY;
 
@@ -19,7 +19,7 @@ async function getLineItems(lineItems) {
         };
         productItems.push(productData);
       } catch (error) {
-        console.error('Error retrieving product:', error.message);
+        console.error("Error retrieving product:", error.message);
       }
     }
   }
@@ -27,7 +27,7 @@ async function getLineItems(lineItems) {
 }
 
 const webhooks = async (request, response) => {
-  const sig = request.headers['stripe-signature'];
+  const sig = request.headers["stripe-signature"];
   let event;
 
   try {
@@ -37,23 +37,25 @@ const webhooks = async (request, response) => {
       sig,
       endpointSecret
     );
-    console.log('Stripe webhook event constructed successfully.');
+    console.log("Stripe webhook event constructed successfully.");
   } catch (err) {
-    console.error('Webhook Error:', err.message);
+    console.error("Webhook Error:", err.message);
     response.status(400).send(`Webhook Error: ${err.message}`);
     return;
   }
 
   // Handle the event
   switch (event.type) {
-    case 'checkout.session.completed': {
+    case "checkout.session.completed": {
       const session = event.data.object;
-      console.log('Checkout session completed:', session);
+      console.log("Checkout session completed:", session);
 
       // Ensure metadata and customer email exist
       if (!session.metadata?.userId || !session.customer_email) {
-        console.error('Session metadata or customer email is missing.');
-        response.status(400).send('Invalid session metadata or customer email.');
+        console.error("Session metadata or customer email is missing.");
+        response
+          .status(400)
+          .send("Invalid session metadata or customer email.");
         return;
       }
 
@@ -61,14 +63,17 @@ const webhooks = async (request, response) => {
       try {
         // Fetch line items
         lineItems = await stripe.checkout.sessions.listLineItems(session.id);
-        console.log('Line items fetched:', lineItems);
+        console.log("Line items fetched:", lineItems);
 
         // Process product details
         productDetails = await getLineItems(lineItems);
-        console.log('Product details:', productDetails);
+        console.log("Product details:", productDetails);
       } catch (error) {
-        console.error('Error fetching line items or product details:', error.message);
-        response.status(500).send('Error processing line items or products.');
+        console.error(
+          "Error fetching line items or product details:",
+          error.message
+        );
+        response.status(500).send("Error processing line items or products.");
         return;
       }
 
@@ -82,11 +87,12 @@ const webhooks = async (request, response) => {
           payment_method_type: session.payment_method_types?.[0], // Use first payment method
           payment_status: session.payment_status,
         },
-        shipping_options: session.shipping_options?.map((s) => ({
-          id: s.id,
-          description: s.description,
-          shipping_amount: s.shipping_amount / 100,
-        })) || [],
+        shipping_options:
+          session.shipping_options?.map((s) => ({
+            id: s.id,
+            description: s.description,
+            shipping_amount: s.shipping_amount / 100,
+          })) || [],
         totalAmount: session.amount_total / 100,
         createdAt: new Date(),
       };
@@ -95,18 +101,18 @@ const webhooks = async (request, response) => {
       try {
         const order = new orderModel(orderDetails);
         const saveOrder = await order.save();
-        console.log('Order saved successfully:', saveOrder);
+        console.log("Order saved successfully:", saveOrder);
 
         // Delete cart items if the order is saved
         if (saveOrder?._id) {
           const deleteCartItem = await addToCartModel.deleteMany({
             userId: session.metadata.userId,
           });
-          console.log('Cart items deleted:', deleteCartItem);
+          console.log("Cart items deleted:", deleteCartItem);
         }
       } catch (error) {
-        console.error('Error saving order to MongoDB:', error.message);
-        response.status(500).send('Error saving order.');
+        console.error("Error saving order to MongoDB:", error.message);
+        response.status(500).send("Error saving order.");
         return;
       }
       break;
