@@ -55,6 +55,6 @@ router.post("/delete-cart-product",authToken,deleteAddToCartProduct)
 
 // payment and order
 router.post("/checkout", authToken,paymentController)
-router.post('/webhook',authToken,webhooks) //api webhook
+router.post('/webhook',webhooks) //api webhook
 
 module.exports = router

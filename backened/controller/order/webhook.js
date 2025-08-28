@@ -2,90 +2,122 @@ const stripe = require('../../config/stripe');
 const orderModel = require('../../models/orderProductModel');
 const addToCartModel = require('../../models/cartProduct');
 
-const endpointSecret = process.env.STRIPE_ENDPOINT_WEBHOOK_SECRET_KEY;
+const endpointSecret = process.env.STRIPE_ENPOINT_WEBHOOK_SECRET_KEY;
 
-// Helper function to retrieve line items
 async function getLineItems(lineItems) {
-    let productItems = [];
-
-    if (lineItems?.length) {  // Adjusted check for lineItems length
-        for (const item of lineItems) {
-            const product = await stripe.products.retrieve(item.price.product);
-            const productId = product.metadata.productId;
-
-            const productData = {
-                productId: productId,
-                name: product.name,
-                price: item.price.unit_amount / 100,  // Converting price to main unit (INR)
-                quantity: item.quantity,
-                image: product.images,
-            };
-            productItems.push(productData);
-        }
+  let productItems = [];
+  if (lineItems?.data?.length) {
+    for (const item of lineItems.data) {
+      try {
+        const product = await stripe.products.retrieve(item.price.product);
+        const productData = {
+          productId: product.metadata.productId,
+          name: product.name,
+          price: item.price.unit_amount / 100,
+          quantity: item.quantity,
+          image: product.images,
+        };
+        productItems.push(productData);
+      } catch (error) {
+        console.error('Error retrieving product:', error.message);
+      }
     }
-
-    return productItems;
+  }
+  return productItems;
 }
 
-// Webhooks handler
 const webhooks = async (request, response) => {
-    const sig = request.headers['stripe-signature'];
-    const payloadString = JSON.stringify(request.body);
+  const sig = request.headers['stripe-signature'];
+  let event;
 
-    let event;
+  try {
+    // Construct the event using the raw request body
+    event = stripe.webhooks.constructEvent(
+      request.rawBody || request.body, // Ensure raw body is used to avoid payload tampering
+      sig,
+      endpointSecret
+    );
+    console.log('Stripe webhook event constructed successfully.');
+  } catch (err) {
+    console.error('Webhook Error:', err.message);
+    response.status(400).send(`Webhook Error: ${err.message}`);
+    return;
+  }
 
-    try {
-        event = stripe.webhooks.constructEvent(payloadString, sig, endpointSecret);
-    } catch (err) {
-        console.error('Webhook signature verification failed:', err.message);
-        return response.status(400).send(`Webhook Error: ${err.message}`);
-    }
+  // Handle the event
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object;
+      console.log('Checkout session completed:', session);
 
-    if (event.type === 'checkout.session.completed') {
-        try {
-            const session = event.data.object;
+      // Ensure metadata and customer email exist
+      if (!session.metadata?.userId || !session.customer_email) {
+        console.error('Session metadata or customer email is missing.');
+        response.status(400).send('Invalid session metadata or customer email.');
+        return;
+      }
 
-            // Retrieve line items from the session
-            const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
-            const productDetails = await getLineItems(lineItems.data);  // Adjusted for structure
+      let lineItems, productDetails;
+      try {
+        // Fetch line items
+        lineItems = await stripe.checkout.sessions.listLineItems(session.id);
+        console.log('Line items fetched:', lineItems);
 
-            // Build the order details
-            const orderDetails = {
-                productDetails: productDetails,
-                email: session.customer_email,
-                userId: session.metadata.userId,
-                paymentDetails: {
-                    paymentId: session.payment_intent || 'N/A',  // Handle null payment_intent
-                    payment_method_type: session.payment_method_types[0],
-                    payment_status: session.payment_status,
-                },
-                shipping_options: session.shipping_options.map((s) => ({
-                    ...s,
-                    shipping_amount: s.shipping_amount / 100,  // Ensure shipping amount is in correct format
-                })),
-                totalAmount: session.amount_total / 100,  // Convert total amount to main unit (INR)
-            };
+        // Process product details
+        productDetails = await getLineItems(lineItems);
+        console.log('Product details:', productDetails);
+      } catch (error) {
+        console.error('Error fetching line items or product details:', error.message);
+        response.status(500).send('Error processing line items or products.');
+        return;
+      }
 
-            // Save the order in MongoDB
-            const order = new orderModel(orderDetails);
-            const savedOrder = await order.save();
+      // Prepare order details
+      const orderDetails = {
+        productDetails,
+        email: session.customer_email,
+        userId: session.metadata.userId,
+        paymentDetails: {
+          paymentId: session.payment_intent,
+          payment_method_type: session.payment_method_types?.[0], // Use first payment method
+          payment_status: session.payment_status,
+        },
+        shipping_options: session.shipping_options?.map((s) => ({
+          id: s.id,
+          description: s.description,
+          shipping_amount: s.shipping_amount / 100,
+        })) || [],
+        totalAmount: session.amount_total / 100,
+        createdAt: new Date(),
+      };
 
-            // If order is saved successfully, delete cart items
-            if (savedOrder?._id) {
-                await addToCartModel.deleteMany({ userId: session.metadata.userId });
-                console.log('Order saved and cart items deleted.');
-            } else {
-                console.error('Failed to save the order.');
-            }
-        } catch (error) {
-            console.error('Error processing checkout session:', error.message);
-            return response.status(500).send('Internal Server Error');
+      // Save the order to MongoDB
+      try {
+        const order = new orderModel(orderDetails);
+        const saveOrder = await order.save();
+        console.log('Order saved successfully:', saveOrder);
+
+        // Delete cart items if the order is saved
+        if (saveOrder?._id) {
+          const deleteCartItem = await addToCartModel.deleteMany({
+            userId: session.metadata.userId,
+          });
+          console.log('Cart items deleted:', deleteCartItem);
         }
-    } else {
-        console.log(`Unhandled event type: ${event.type}`);
+      } catch (error) {
+        console.error('Error saving order to MongoDB:', error.message);
+        response.status(500).send('Error saving order.');
+        return;
+      }
+      break;
     }
 
-    response.status(200).send();
+    // Handle other event types
+    default:
+      console.log(`Unhandled event type: ${event.type}`);
+  }
+
+  response.status(200).send();
 };
 
 module.exports = webhooks;

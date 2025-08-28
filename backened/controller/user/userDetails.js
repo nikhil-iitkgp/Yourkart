@@ -13,7 +13,7 @@ async function userDetailsController(req,res) {
                 message : "User details fetched successfully"
             })
 
-            console.log("user",user)
+            // console.log("user",user)
 
 
         } catch (err) {
